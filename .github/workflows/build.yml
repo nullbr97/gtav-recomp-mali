@@ -33,57 +33,67 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build clang lld llvm libvulkan-dev jq curl zip unzip
 
-      - name: Download Upstream Android Package
+      - name: Download Official Linux Package
         run: |
-          mkdir -p upstream_release
-          cd upstream_release
+          mkdir -p upstream_pkg
+          cd upstream_pkg
           
-          # Chamada com User-Agent para nao ser bloqueada pela API do GitHub
+          # Descarrega o pacote oficial de Linux mais recente
           RELEASE_JSON=$(curl -s -H "User-Agent: GitHub-Actions" https://api.github.com/repos/andrewnakas/gtav-recomp/releases/latest)
-          DOWNLOAD_URLS=$(echo "$RELEASE_JSON" | jq -r '.assets[].browser_download_url')
+          PKG_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | contains("linux")) | .browser_download_url' | head -n 1)
           
-          for url in $DOWNLOAD_URLS; do
-            echo "A verificar asset: $url"
-            curl -H "User-Agent: GitHub-Actions" -L -O "$url"
-          done
-          
-          # Extrai recursivamente todos os zips e tars descarregados
-          find . -name "*.zip" -exec unzip -o {} \; || true
-          find . -name "*.tar.gz" -exec tar -xzf {} \; || true
+          if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
+            echo "A descarregar pacote base: $PKG_URL"
+            curl -H "User-Agent: GitHub-Actions" -L -o linux_pkg.tar.gz "$PKG_URL"
+            tar -xzf linux_pkg.tar.gz || true
+          fi
           cd ..
 
       - name: Apply Mali VRAM & Texture Fallback Patches
         run: |
-          # 1. Reduz o buffer estatico de emulacao de 512MB para 128MB caso nao haja sparse binding
+          # 1. Reduz o buffer estatico de emulacao de 512MB para 128MB
           find gtav/src -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.h" \) -exec sed -i 's/512 \* 1024 \* 1024/128 \* 1024 \* 1024/g' {} +
 
-          # 2. Reduz orcamento de cache de texturas padrao de 384MB para 128MB
+          # 2. Reduz orcamento de cache de texturas de 384MB para 128MB
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/budget 384/budget 128/g' {} +
 
           # 3. Altera fallback DXT de RGBA16 (format 97) para RGBA8 basico (format 37)
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/fallback format (using the Vulkan format 97/fallback format (using the Vulkan format 37/g' {} +
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/VK_FORMAT_R16G16B16A16_SFLOAT/VK_FORMAT_R8G8B8A8_UNORM/g' {} +
 
-      - name: Package Output Files
+      - name: Assemble Android APK Shell
         run: |
           mkdir -p output_dist
 
-          # Copia qualquer APK encontrado em todo o espaco de trabalho
-          find . -name "*.apk" -exec cp {} output_dist/ \; || true
+          # Procura o APK que vem embutido nos pacotes oficiais ou nas ferramentas
+          APK_FOUND=$(find upstream_pkg -name "*.apk" | head -n 1)
+          if [ -n "$APK_FOUND" ]; then
+            echo "Encontrado APK base: $APK_FOUND"
+            cp "$APK_FOUND" output_dist/GTAV_Mali.apk
+          fi
 
-          # Copia qualquer zip ou ficheiro de dados do Android
-          find upstream_release -name "*android*" -exec cp -r {} output_dist/ \; || true
-          find upstream_release -name "*.zip" -exec cp {} output_dist/ \; || true
+          # Se o pacote trouxer o projeto Gradle pronto em tools/android
+          PROJECT_DIR=$(find . -maxdepth 5 -name "build.gradle" -exec dirname {} \; | head -n 1)
+          if [ -n "$PROJECT_DIR" ]; then
+            echo "A compilar via Gradle em: $PROJECT_DIR"
+            cd "$PROJECT_DIR"
+            chmod +x gradlew || true
+            if [ -f "./gradlew" ]; then
+              ./gradlew assembleDebug || ./gradlew assembleRelease || true
+            fi
+            cd -
+            find "$PROJECT_DIR/build/outputs/apk" -name "*.apk" -exec cp {} output_dist/GTAV_Mali.apk \; || true
+          fi
 
-          # Garante que a pasta nunca fica vazia para nao falhar o upload
-          touch output_dist/build_info.txt
-          echo "Build executada em $(date)" > output_dist/build_info.txt
-          ls -la output_dist/
+          # Recolhe qualquer outro ficheiro de dados do Android gerado
+          find upstream_pkg -name "*android*" -type f -exec cp {} output_dist/ \; || true
+
+          # Listagem dos ficheiros prontos
+          ls -lh output_dist/
 
       - name: Upload Output APK
         uses: actions/upload-artifact@v4
         with:
           name: GTAV-Mali-Build
-          path: output_dist/
-          if-no-files-found: warn
-          
+          path: output_dist/*.apk
+          if-no-files-found: error
