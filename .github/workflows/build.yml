@@ -34,27 +34,37 @@ jobs:
 
       - name: Apply Mali VRAM & Texture Fallback Patches
         run: |
-          # 1. Reduz o buffer estático de emulação de 512MB para 128MB caso não haja sparse binding
+          # 1. Reduz o buffer estático de 512MB para 128MB caso não haja sparse binding
           find gtav/src -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.h" \) -exec sed -i 's/512 \* 1024 \* 1024/128 \* 1024 \* 1024/g' {} +
 
           # 2. Reduz orçamento de cache de texturas de 384MB para 128MB
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/budget 384/budget 128/g' {} +
 
-          # 3. Altera o fallback DXT de RGBA16 (format 97) para RGBA8 (format 37)
+          # 3. Altera fallback DXT de RGBA16 (format 97) para RGBA8 (format 37)
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/fallback format (using the Vulkan format 97/fallback format (using the Vulkan format 37/g' {} +
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/VK_FORMAT_R16G16B16A16_SFLOAT/VK_FORMAT_R8G8B8A8_UNORM/g' {} +
 
-      - name: Build Android Shell & Game
+      - name: Prepare Android Environment & Build Shell
         run: |
+          # Cria o diretório e o env.sh exigido na linha 19 do make_shell.sh
+          mkdir -p /home/runner/android-tools
+          cat << 'EOF' > /home/runner/android-tools/env.sh
+          export ANDROID_HOME=$ANDROID_HOME
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+          export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
+          export ANDROID_NDK=$ANDROID_NDK_HOME
+          export PATH=$ANDROID_NDK_HOME:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH
+          EOF
+
           mkdir -p build_output
           chmod +x tools/android/*.sh || true
 
-          # Executa o make_shell passando os diretórios esperados como parâmetros ($1 e $2)
+          # Executa o make_shell com os parâmetros necessários
           bash tools/android/make_shell.sh build_output release || \
           bash tools/android/make_shell.sh build_output || \
           bash tools/android/make_shell.sh .
 
-          # Compila o APK via Gradle no diretório do projeto Android
+          # Compila o APK com Gradle
           SHELL_DIR=$(find . -maxdepth 4 -name "build.gradle" -exec dirname {} \; | head -n 1)
           if [ -n "$SHELL_DIR" ]; then
             cd "$SHELL_DIR"
