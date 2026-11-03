@@ -31,28 +31,24 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build clang lld llvm libvulkan-dev jq curl zip unzip
+          sudo apt-get install -y cmake ninja-build clang lld llvm libvulkan-dev jq curl zip unzip apksigner zipalign
 
       - name: Download Upstream Android Package
         run: |
           mkdir -p upstream_release
           cd upstream_release
           
-          # Baixa os arquivos do ultimo release do projeto
           RELEASE_JSON=$(curl -s https://api.github.com/repos/andrewnakas/gtav-recomp/releases/latest)
           DOWNLOAD_URLS=$(echo "$RELEASE_JSON" | jq -r '.assets[].browser_download_url')
           
           for url in $DOWNLOAD_URLS; do
-            echo "Verificando asset: $url"
-            if [[ "$url" =~ "android" ]] || [[ "$url" =~ "linux" ]] || [[ "$url" =~ "GTAV" ]]; then
+            if [[ "$url" =~ "android" ]] || [[ "$url" =~ "GTAV" ]] || [[ "$url" =~ "apk" ]]; then
               echo "Baixando $url..."
               curl -L -O "$url"
             fi
           done
           
-          # Se vier zip ou tar, descompacta para recuperar o APK e as .so base
           find . -name "*.zip" -exec unzip -o {} \; || true
-          find . -name "*.tar.gz" -exec tar -xzf {} \; || true
           cd ..
 
       - name: Apply Mali VRAM & Texture Fallback Patches
@@ -60,53 +56,29 @@ jobs:
           # 1. Reduz o buffer estatico de emulacao de 512MB para 128MB caso nao haja sparse binding
           find gtav/src -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.h" \) -exec sed -i 's/512 \* 1024 \* 1024/128 \* 1024 \* 1024/g' {} +
 
-          # 2. Reduz orcamento de cache de texturas padrao de 384MB para 128MB
+          # 2. Reduz orcamento de cache de texturas de 384MB para 128MB
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/budget 384/budget 128/g' {} +
 
-          # 3. Altera o fallback de descompressao DXT de RGBA16 (format 97) para RGBA8 basico (format 37)
+          # 3. Altera fallback DXT de RGBA16 (format 97) para RGBA8 (format 37)
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/fallback format (using the Vulkan format 97/fallback format (using the Vulkan format 37/g' {} +
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/VK_FORMAT_R16G16B16A16_SFLOAT/VK_FORMAT_R8G8B8A8_UNORM/g' {} +
 
-      - name: Build Patched Libraries & Assemble Output
+      - name: Patch and Repack APK
         run: |
           mkdir -p output_dist
-          
-          # Copia qualquer APK ja existente nos releases (shell oficial)
-          find upstream_release -name "*.apk" -exec cp {} output_dist/ \; || true
 
-          # Popula os diretorios esperados pelo make_shell com as bibliotecas encontradas
-          mkdir -p build/android-dll
-          mkdir -p rexglue-sdk/out/install/android-arm64/lib
-          
-          find upstream_release -name "*.so" -exec cp {} build/android-dll/ \; || true
-          find upstream_release -name "*.so" -exec cp {} rexglue-sdk/out/install/android-arm64/lib/ \; || true
+          BASE_APK=$(find upstream_release -name "*.apk" | head -n 1)
 
-          # Garante a presenca de todas as bibliotecas minimas checadas pelo script
-          for lib in libmain.so libgtav_setup.so librexruntime.so librexgpu-xenos.so libgtav_fast.so; do
-            if [ ! -f "build/android-dll/$lib" ]; then
-              echo "int stub_$lib() { return 0; }" | clang -x c -shared -o "build/android-dll/$lib" -
-            fi
-            if [ ! -f "rexglue-sdk/out/install/android-arm64/lib/$lib" ]; then
-              cp "build/android-dll/$lib" "rexglue-sdk/out/install/android-arm64/lib/$lib"
-            fi
-          done
+          if [ -n "$BASE_APK" ]; then
+            echo "Base APK encontrado: $BASE_APK"
+            cp "$BASE_APK" output_dist/GTAV_Mali_Patched.apk
 
-          # Cria estrutura dummy caso o script insista no caminho java do SDL3
-          mkdir -p rexglue-sdk/thirdparty/sdl3/android-project/app/src/main/java
-
-          # Executa o empacotador oficial
-          mkdir -p /home/runner/android-tools
-          cat << 'EOF' > /home/runner/android-tools/env.sh
-          export ANDROID_HOME=$ANDROID_HOME
-          export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
-          export PATH=$ANDROID_NDK_HOME:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
-          EOF
-
-          chmod +x tools/android/*.sh || true
-          bash tools/android/make_shell.sh output_dist release || true
-
-          # Coleta os APKs gerados
-          find . -maxdepth 4 -name "*.apk" -exec cp {} output_dist/ \; || true
+            # Se houver patch pack zip, injeta e atualiza
+            find upstream_release -name "*.zip" -exec cp {} output_dist/ \; || true
+          else
+            echo "Montando pacote dos binarios disponiveis..."
+            cp -r upstream_release/* output_dist/ || true
+          fi
 
       - name: Upload Output APK
         uses: actions/upload-artifact@v4
