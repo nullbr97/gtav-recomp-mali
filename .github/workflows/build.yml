@@ -22,6 +22,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+
       - name: Install System Dependencies
         run: |
           sudo apt-get update
@@ -29,32 +34,37 @@ jobs:
 
       - name: Apply Mali VRAM & Texture Fallback Patches
         run: |
-          # 1. Reduz o buffer estatico de emulacao de 512MB para 128MB caso nao haja sparse binding
+          # 1. Reduz o buffer estático de emulação de 512MB para 128MB caso não haja sparse binding
           find gtav/src -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.h" \) -exec sed -i 's/512 \* 1024 \* 1024/128 \* 1024 \* 1024/g' {} +
 
-          # 2. Reduz orcamento de cache de texturas padrao de 384MB para 128MB
+          # 2. Reduz orçamento de cache de texturas de 384MB para 128MB
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/budget 384/budget 128/g' {} +
 
-          # 3. Altera o fallback de descompressao DXT de RGBA16 (format 97) para RGBA8 basico (format 37) para cortar metade da VRAM
+          # 3. Altera o fallback DXT de RGBA16 (format 97) para RGBA8 (format 37)
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/fallback format (using the Vulkan format 97/fallback format (using the Vulkan format 37/g' {} +
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/VK_FORMAT_R16G16B16A16_SFLOAT/VK_FORMAT_R8G8B8A8_UNORM/g' {} +
 
       - name: Build Android Shell & Game
         run: |
-          chmod +x tools/android/make_shell.sh || true
-          chmod +x build.sh || true
-          
-          # Se o script make_shell existir, compila o shell do app
-          if [ -f "tools/android/make_shell.sh" ]; then
-            bash tools/android/make_shell.sh
-          fi
+          mkdir -p build_output
+          chmod +x tools/android/*.sh || true
 
-          # Compila o APK usando o Gradle wrapper
-          if [ -d "tools/android/shell" ]; then
-            cd tools/android/shell
-            chmod +x gradlew
-            ./gradlew assembleRelease || ./gradlew assembleDebug
-            cd ../../../
+          # Executa o make_shell passando os diretórios esperados como parâmetros ($1 e $2)
+          bash tools/android/make_shell.sh build_output release || \
+          bash tools/android/make_shell.sh build_output || \
+          bash tools/android/make_shell.sh .
+
+          # Compila o APK via Gradle no diretório do projeto Android
+          SHELL_DIR=$(find . -maxdepth 4 -name "build.gradle" -exec dirname {} \; | head -n 1)
+          if [ -n "$SHELL_DIR" ]; then
+            cd "$SHELL_DIR"
+            chmod +x gradlew || true
+            if [ -f "./gradlew" ]; then
+              ./gradlew assembleRelease || ./gradlew assembleDebug
+            else
+              gradle assembleRelease || gradle assembleDebug
+            fi
+            cd -
           fi
 
       - name: Locate and Upload APK
@@ -63,6 +73,6 @@ jobs:
           name: GTAV-Mali-Build
           path: |
             **/*.apk
-            android/*.zip
+            **/*.zip
           if-no-files-found: warn
           
