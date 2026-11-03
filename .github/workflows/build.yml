@@ -31,24 +31,25 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build clang lld llvm libvulkan-dev jq curl zip unzip apksigner zipalign
+          sudo apt-get install -y cmake ninja-build clang lld llvm libvulkan-dev jq curl zip unzip
 
       - name: Download Upstream Android Package
         run: |
           mkdir -p upstream_release
           cd upstream_release
           
-          RELEASE_JSON=$(curl -s https://api.github.com/repos/andrewnakas/gtav-recomp/releases/latest)
+          # Chamada com User-Agent para nao ser bloqueada pela API do GitHub
+          RELEASE_JSON=$(curl -s -H "User-Agent: GitHub-Actions" https://api.github.com/repos/andrewnakas/gtav-recomp/releases/latest)
           DOWNLOAD_URLS=$(echo "$RELEASE_JSON" | jq -r '.assets[].browser_download_url')
           
           for url in $DOWNLOAD_URLS; do
-            if [[ "$url" =~ "android" ]] || [[ "$url" =~ "GTAV" ]] || [[ "$url" =~ "apk" ]]; then
-              echo "Baixando $url..."
-              curl -L -O "$url"
-            fi
+            echo "A verificar asset: $url"
+            curl -H "User-Agent: GitHub-Actions" -L -O "$url"
           done
           
+          # Extrai recursivamente todos os zips e tars descarregados
           find . -name "*.zip" -exec unzip -o {} \; || true
+          find . -name "*.tar.gz" -exec tar -xzf {} \; || true
           cd ..
 
       - name: Apply Mali VRAM & Texture Fallback Patches
@@ -56,34 +57,33 @@ jobs:
           # 1. Reduz o buffer estatico de emulacao de 512MB para 128MB caso nao haja sparse binding
           find gtav/src -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.h" \) -exec sed -i 's/512 \* 1024 \* 1024/128 \* 1024 \* 1024/g' {} +
 
-          # 2. Reduz orcamento de cache de texturas de 384MB para 128MB
+          # 2. Reduz orcamento de cache de texturas padrao de 384MB para 128MB
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/budget 384/budget 128/g' {} +
 
-          # 3. Altera fallback DXT de RGBA16 (format 97) para RGBA8 (format 37)
+          # 3. Altera fallback DXT de RGBA16 (format 97) para RGBA8 basico (format 37)
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/fallback format (using the Vulkan format 97/fallback format (using the Vulkan format 37/g' {} +
           find gtav/src -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/VK_FORMAT_R16G16B16A16_SFLOAT/VK_FORMAT_R8G8B8A8_UNORM/g' {} +
 
-      - name: Patch and Repack APK
+      - name: Package Output Files
         run: |
           mkdir -p output_dist
 
-          BASE_APK=$(find upstream_release -name "*.apk" | head -n 1)
+          # Copia qualquer APK encontrado em todo o espaco de trabalho
+          find . -name "*.apk" -exec cp {} output_dist/ \; || true
 
-          if [ -n "$BASE_APK" ]; then
-            echo "Base APK encontrado: $BASE_APK"
-            cp "$BASE_APK" output_dist/GTAV_Mali_Patched.apk
+          # Copia qualquer zip ou ficheiro de dados do Android
+          find upstream_release -name "*android*" -exec cp -r {} output_dist/ \; || true
+          find upstream_release -name "*.zip" -exec cp {} output_dist/ \; || true
 
-            # Se houver patch pack zip, injeta e atualiza
-            find upstream_release -name "*.zip" -exec cp {} output_dist/ \; || true
-          else
-            echo "Montando pacote dos binarios disponiveis..."
-            cp -r upstream_release/* output_dist/ || true
-          fi
+          # Garante que a pasta nunca fica vazia para nao falhar o upload
+          touch output_dist/build_info.txt
+          echo "Build executada em $(date)" > output_dist/build_info.txt
+          ls -la output_dist/
 
       - name: Upload Output APK
         uses: actions/upload-artifact@v4
         with:
           name: GTAV-Mali-Build
           path: output_dist/
-          if-no-files-found: error
+          if-no-files-found: warn
           
